@@ -1,65 +1,91 @@
-# Product Service Architecture
+# EShop Product Service
 
-## 一、架构与数据流向 (Architecture & Data Flow)
+基于 Go + Gin + GORM + Redis 的商品微服务示例，按 DDD 分层组织，包含高并发场景下的缓存、事务、幂等与库存一致性处理。
+
+## 包职责
+
+- `cmd/product`
+  - 应用入口，负责初始化 MySQL/Redis、Gin 路由、HTTP Server 参数和优雅停机。
+- `internal/product/handler`
+  - 接口层（Controller/Handler）。
+  - 做参数校验、请求解析、错误码映射，不承载核心业务规则。
+- `internal/product/service`
+  - 应用服务层（Application Service）。
+  - 编排业务流程：幂等判定、事务边界、库存扣减重试、调用 Repository、生成 Outbox 事件。
+- `internal/product/repository`
+  - 基础设施层（Repository/DAO）。
+  - 负责 MySQL 读写、Redis 缓存读写、库存账本、幂等记录、Outbox 持久化。
+- `api/proto`
+  - 对外 gRPC 接口契约（`product.proto`）。
+- `migrations`
+  - MySQL DDL（`products`、`product_stock_ledger`、`idempotency_records`、`outbox_events`）。
+
+## 架构与数据流
 
 ```mermaid
 flowchart LR
-    C[Client / API Gateway] --> H[Gin Handler]
-    H --> S[Application Service]
+    C[Client / Gateway] --> H[Gin Handler]
+    H --> S[Product Service]
     S --> R[(Redis)]
     S --> M[(MySQL)]
-    S --> Q[(Kafka/RabbitMQ)]
+    S --> O[(Outbox Table)]
+    O --> MQ[(Kafka / RabbitMQ Publisher)]
 
-    subgraph Read Path
+    subgraph Read
       H --> S
-      S -->|"Cache Aside"| R
-      R -->|"Cache Miss"| S
+      S -->|Cache Aside| R
+      R -->|miss| S
       S --> M
-      S -->|"TTL + Jitter / Empty Marker"| R
+      S -->|TTL+jitter / empty marker| R
     end
 
-    subgraph Write Path
-      H -->|"Idempotency-Key"| S
-      S -->|"SETNX gate"| R
-      S -->|"Tx + Optimistic Lock(version)"| M
-      S -->|"Outbox Event"| M
-      M --> Q
-      S -->|"Delete Cache"| R
+    subgraph Write
+      H -->|Idempotency-Key| S
+      S -->|SETNX gate| R
+      S -->|Tx| M
+      S -->|Version check + stock ledger| M
+      S -->|idempotency_records| M
+      S -->|outbox_events| O
+      S -->|cache invalidation| R
     end
 ```
 
-- 写请求：`Redis SETNX` + `MySQL idempotency_records` 双层幂等。
-- 库存扣减：事务内 `SELECT ... FOR UPDATE` + `version` 乐观锁条件更新，重试 3 次。
-- 读请求：Cache Aside，穿透防护用 `__nil__`，雪崩防护用 TTL 随机抖动。
+关键策略：
 
-## 二、接口契约与表结构 (Interface & Schema)
+- 写接口幂等：`Redis SETNX` + `idempotency_records(operation, idem_key)` 双保险。
+- 库存一致性：事务内扣减 + 乐观锁版本字段冲突重试（最多 3 次）+ 库存流水。
+- 缓存策略：Cache Aside，空值缓存防穿透，TTL 抖动防雪崩。
+- 异步一致性：Outbox 表落库后由独立发布器投递 MQ，避免“本地事务提交成功但 MQ 发送失败”。
 
-- Proto: `api/proto/product.proto`
-- DDL: `migrations/001_product.sql`
+## API 路由（HTTP）
 
-## 三、核心源码实现 (Core Source Code)
+- `GET /health`
+- `GET /products/:id`
+- `GET /products?page=1&page_size=20&status=1`
+- `POST /products`（Header: `Idempotency-Key`）
+- `PUT /products/:id`（Header: `Idempotency-Key`）
+- `POST /products/:id/stock`（Header: `Idempotency-Key`）
 
-- Repository: `internal/product/repository/product_repository.go`
-- Service: `internal/product/service/product_service.go`
-- Handler: `internal/product/handler/http_handler.go`
-- Entry: `cmd/product/main.go`
+## 快速启动
 
-## 四、极端场景预案 (Edge Cases Handling)
+1. 准备 MySQL 与 Redis。
+2. 执行 `migrations/001_product.sql`。
+3. 配置环境变量（可选）：
+   - `MYSQL_DSN`
+   - `REDIS_ADDR`
+   - `REDIS_PASSWORD`
+   - `HTTP_ADDR`
+4. 启动服务：
 
-1. Redis 不可用
+```bash
+go run ./cmd/product
+```
 
-- 读链路降级 DB。
-- 写链路幂等回退到 MySQL `idempotency_records(operation, idem_key)` 唯一键。
+## 当前代码覆盖点
 
-2. 高并发库存扣减冲突
-
-- 事务 + 乐观锁版本号冲突重试（最多 3 次），避免超卖。
-
-3. MQ 重复消费
-
-- 消费者按 `event_id` 或 `request_id` 落幂等记录，重复消息直接 ACK。
-
-4. 缓存雪崩/穿透
-
-- 热点 key TTL 加随机抖动。
-- 不存在商品写入短 TTL 的 `__nil__` 空对象缓存。
+- 完整 Handler / Service / Repository 主链路。
+- 事务提交、回滚、防御性错误处理。
+- 缓存读写与失效。
+- 幂等记录回放。
+- 库存扣减冲突重试。
+- 库存流水与 Outbox 持久化。

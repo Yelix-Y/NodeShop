@@ -47,3 +47,21 @@ CREATE TABLE `idempotency_records` (
   UNIQUE KEY `uk_idem_op_key` (`operation`, `idem_key`),
   KEY `idx_idem_deleted_at` (`deleted_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE `outbox_events` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `event_id` VARCHAR(64) NOT NULL,
+  `aggregate` VARCHAR(64) NOT NULL,
+  `aggregate_id` BIGINT UNSIGNED NOT NULL,
+  `event_type` VARCHAR(64) NOT NULL,
+  `payload` JSON NOT NULL,
+  `status` TINYINT NOT NULL DEFAULT 0,
+  `retry_count` INT NOT NULL DEFAULT 0,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  `deleted_at` DATETIME(3) NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_outbox_event_id` (`event_id`),
+  KEY `idx_outbox_status_created` (`status`, `created_at`),
+  KEY `idx_outbox_deleted_at` (`deleted_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

@@ -18,6 +18,10 @@ const (
 	OperationCreateProduct = "create_product"
 	OperationUpdateProduct = "update_product"
 	OperationAdjustStock   = "adjust_stock"
+
+	EventProductCreated = "product.created"
+	EventProductUpdated = "product.updated"
+	EventStockAdjusted  = "product.stock_adjusted"
 )
 
 type ProductService struct {
@@ -115,6 +119,13 @@ func (s *ProductService) CreateProduct(ctx context.Context, idemKey string, inpu
 		}
 		return nil, err
 	}
+	if err := s.repo.SaveOutboxEvent(ctx, tx, idemKey, "product", product.ID, EventProductCreated, product); err != nil {
+		rollbackErr := s.repo.RollbackTx(tx)
+		if rollbackErr != nil {
+			return nil, fmt.Errorf("save outbox failed: %w; rollback failed: %v", err, rollbackErr)
+		}
+		return nil, err
+	}
 
 	if err := s.repo.CommitTx(tx); err != nil {
 		return nil, err
@@ -167,7 +178,7 @@ func (s *ProductService) UpdateProduct(ctx context.Context, idemKey string, inpu
 		return nil, err
 	}
 
-	updated, err := s.repo.GetProductByID(ctx, input.ID)
+	updated, err := s.repo.GetProductByIDInTx(ctx, tx, input.ID)
 	if err != nil {
 		rollbackErr := s.repo.RollbackTx(tx)
 		if rollbackErr != nil {
@@ -179,6 +190,13 @@ func (s *ProductService) UpdateProduct(ctx context.Context, idemKey string, inpu
 		rollbackErr := s.repo.RollbackTx(tx)
 		if rollbackErr != nil {
 			return nil, fmt.Errorf("save idempotency failed: %w; rollback failed: %v", err, rollbackErr)
+		}
+		return nil, err
+	}
+	if err := s.repo.SaveOutboxEvent(ctx, tx, idemKey, "product", input.ID, EventProductUpdated, updated); err != nil {
+		rollbackErr := s.repo.RollbackTx(tx)
+		if rollbackErr != nil {
+			return nil, fmt.Errorf("save outbox failed: %w; rollback failed: %v", err, rollbackErr)
 		}
 		return nil, err
 	}
@@ -219,17 +237,45 @@ func (s *ProductService) AdjustStock(ctx context.Context, idemKey string, produc
 				return nil, fmt.Errorf("adjust stock failed: %w; rollback failed: %v", adjustErr, rollbackErr)
 			}
 			lastErr = adjustErr
-			if errors.Is(adjustErr, repository.ErrIdempotencyConflict) {
+			if errors.Is(adjustErr, repository.ErrOptimisticConflict) {
 				time.Sleep(20 * time.Millisecond)
 				continue
 			}
 			return nil, adjustErr
 		}
 
+		ledger := &repository.ProductStockLedger{
+			ProductID:   productID,
+			RequestID:   idemKey,
+			Delta:       delta,
+			BeforeStock: updated.Stock - delta,
+			AfterStock:  updated.Stock,
+			Reason:      "api_adjust_stock",
+		}
+		if err := s.repo.SaveStockLedger(ctx, tx, ledger); err != nil {
+			rollbackErr := s.repo.RollbackTx(tx)
+			if rollbackErr != nil {
+				return nil, fmt.Errorf("save stock ledger failed: %w; rollback failed: %v", err, rollbackErr)
+			}
+			return nil, err
+		}
+
 		if err := s.repo.SaveIdempotencyDone(ctx, tx, OperationAdjustStock, idemKey, productID, updated); err != nil {
 			rollbackErr := s.repo.RollbackTx(tx)
 			if rollbackErr != nil {
 				return nil, fmt.Errorf("save idempotency failed: %w; rollback failed: %v", err, rollbackErr)
+			}
+			return nil, err
+		}
+		if err := s.repo.SaveOutboxEvent(ctx, tx, idemKey, "product", productID, EventStockAdjusted, map[string]any{
+			"product_id":   productID,
+			"delta":        delta,
+			"latest_stock": updated.Stock,
+			"version":      updated.Version,
+		}); err != nil {
+			rollbackErr := s.repo.RollbackTx(tx)
+			if rollbackErr != nil {
+				return nil, fmt.Errorf("save outbox failed: %w; rollback failed: %v", err, rollbackErr)
 			}
 			return nil, err
 		}

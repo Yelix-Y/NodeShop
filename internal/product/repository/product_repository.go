@@ -18,6 +18,7 @@ var (
 	ErrNotFound            = errors.New("product not found")
 	ErrInsufficientStock   = errors.New("insufficient stock")
 	ErrIdempotencyConflict = errors.New("idempotency key conflict")
+	ErrOptimisticConflict  = errors.New("optimistic lock conflict")
 )
 
 type Product struct {
@@ -52,6 +53,41 @@ type IdempotencyRecord struct {
 
 func (IdempotencyRecord) TableName() string {
 	return "idempotency_records"
+}
+
+type ProductStockLedger struct {
+	ID          uint64         `gorm:"primaryKey"`
+	ProductID   uint64         `gorm:"column:product_id;not null"`
+	RequestID   string         `gorm:"column:request_id;size:64;not null"`
+	Delta       int64          `gorm:"column:delta;not null"`
+	BeforeStock int64          `gorm:"column:before_stock;not null"`
+	AfterStock  int64          `gorm:"column:after_stock;not null"`
+	Reason      string         `gorm:"column:reason;size:64;not null"`
+	CreatedAt   time.Time      `gorm:"column:created_at"`
+	UpdatedAt   time.Time      `gorm:"column:updated_at"`
+	DeletedAt   gorm.DeletedAt `gorm:"column:deleted_at;index"`
+}
+
+func (ProductStockLedger) TableName() string {
+	return "product_stock_ledger"
+}
+
+type OutboxEvent struct {
+	ID          uint64         `gorm:"primaryKey"`
+	EventID     string         `gorm:"column:event_id;size:64;not null"`
+	Aggregate   string         `gorm:"column:aggregate;size:64;not null"`
+	AggregateID uint64         `gorm:"column:aggregate_id;not null"`
+	EventType   string         `gorm:"column:event_type;size:64;not null"`
+	Payload     string         `gorm:"column:payload;type:json;not null"`
+	Status      int8           `gorm:"column:status;not null"`
+	RetryCount  int            `gorm:"column:retry_count;not null"`
+	CreatedAt   time.Time      `gorm:"column:created_at"`
+	UpdatedAt   time.Time      `gorm:"column:updated_at"`
+	DeletedAt   gorm.DeletedAt `gorm:"column:deleted_at;index"`
+}
+
+func (OutboxEvent) TableName() string {
+	return "outbox_events"
 }
 
 type ProductFilter struct {
@@ -166,6 +202,20 @@ func (r *ProductRepository) ListProducts(ctx context.Context, f ProductFilter) (
 	return products, total, nil
 }
 
+func (r *ProductRepository) GetProductByIDInTx(ctx context.Context, tx *gorm.DB, id uint64) (*Product, error) {
+	if tx == nil {
+		return nil, errors.New("tx is nil")
+	}
+	var product Product
+	if err := tx.WithContext(ctx).Where("id = ?", id).First(&product).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("query product in tx: %w", err)
+	}
+	return &product, nil
+}
+
 func (r *ProductRepository) CreateProduct(ctx context.Context, tx *gorm.DB, p *Product) error {
 	if tx == nil {
 		return errors.New("tx is nil")
@@ -234,7 +284,7 @@ func (r *ProductRepository) AdjustStock(ctx context.Context, tx *gorm.DB, produc
 		return nil, fmt.Errorf("adjust stock: %w", result.Error)
 	}
 	if result.RowsAffected == 0 {
-		return nil, ErrIdempotencyConflict
+		return nil, ErrOptimisticConflict
 	}
 
 	var updated Product
@@ -242,6 +292,19 @@ func (r *ProductRepository) AdjustStock(ctx context.Context, tx *gorm.DB, produc
 		return nil, fmt.Errorf("query updated product: %w", err)
 	}
 	return &updated, nil
+}
+
+func (r *ProductRepository) SaveStockLedger(ctx context.Context, tx *gorm.DB, ledger *ProductStockLedger) error {
+	if tx == nil {
+		return errors.New("tx is nil")
+	}
+	if ledger == nil {
+		return errors.New("ledger is nil")
+	}
+	if err := tx.WithContext(ctx).Create(ledger).Error; err != nil {
+		return fmt.Errorf("save stock ledger: %w", err)
+	}
+	return nil
 }
 
 func (r *ProductRepository) SaveIdempotencyDone(ctx context.Context, tx *gorm.DB, operation, key string, resourceID uint64, response any) error {
@@ -287,6 +350,37 @@ func (r *ProductRepository) GetIdempotencyRecord(ctx context.Context, operation,
 func (r *ProductRepository) InvalidateProductCache(ctx context.Context, id uint64) error {
 	if err := r.redis.Del(ctx, r.productCacheKey(id)).Err(); err != nil && !errors.Is(err, redis.Nil) {
 		return fmt.Errorf("invalidate product cache: %w", err)
+	}
+	return nil
+}
+
+func (r *ProductRepository) SaveOutboxEvent(
+	ctx context.Context,
+	tx *gorm.DB,
+	eventID string,
+	aggregate string,
+	aggregateID uint64,
+	eventType string,
+	payload any,
+) error {
+	if tx == nil {
+		return errors.New("tx is nil")
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal outbox payload: %w", err)
+	}
+	event := OutboxEvent{
+		EventID:     eventID,
+		Aggregate:   aggregate,
+		AggregateID: aggregateID,
+		EventType:   eventType,
+		Payload:     string(b),
+		Status:      0,
+		RetryCount:  0,
+	}
+	if err := tx.WithContext(ctx).Create(&event).Error; err != nil {
+		return fmt.Errorf("save outbox event: %w", err)
 	}
 	return nil
 }
