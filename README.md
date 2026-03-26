@@ -12,19 +12,19 @@ flowchart LR
 
     subgraph Read Path
       H --> S
-      S -->|Cache Aside| R
-      R -->|Cache Miss| S
+      S -->|"Cache Aside"| R
+      R -->|"Cache Miss"| S
       S --> M
-      S -->|TTL + Jitter / Empty Marker| R
+      S -->|"TTL + Jitter / Empty Marker"| R
     end
 
     subgraph Write Path
-      H -->|Idempotency-Key| S
-      S -->|SETNX gate| R
-      S -->|Tx + Optimistic Lock(version)| M
-      S -->|Outbox Event| M
+      H -->|"Idempotency-Key"| S
+      S -->|"SETNX gate"| R
+      S -->|"Tx + Optimistic Lock(version)"| M
+      S -->|"Outbox Event"| M
       M --> Q
-      S -->|Delete Cache| R
+      S -->|"Delete Cache"| R
     end
 ```
 
@@ -47,15 +47,19 @@ flowchart LR
 ## 四、极端场景预案 (Edge Cases Handling)
 
 1. Redis 不可用
+
 - 读链路降级 DB。
 - 写链路幂等回退到 MySQL `idempotency_records(operation, idem_key)` 唯一键。
 
 2. 高并发库存扣减冲突
+
 - 事务 + 乐观锁版本号冲突重试（最多 3 次），避免超卖。
 
 3. MQ 重复消费
+
 - 消费者按 `event_id` 或 `request_id` 落幂等记录，重复消息直接 ACK。
 
 4. 缓存雪崩/穿透
+
 - 热点 key TTL 加随机抖动。
 - 不存在商品写入短 TTL 的 `__nil__` 空对象缓存。
