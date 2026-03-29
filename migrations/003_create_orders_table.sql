@@ -1,0 +1,20 @@
+﻿CREATE TABLE `orders` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `order_no` VARCHAR(64) NOT NULL,
+  `user_id` BIGINT UNSIGNED NOT NULL,
+  `product_id` BIGINT UNSIGNED NOT NULL,
+  `quantity` BIGINT NOT NULL,
+  `total_price_cent` BIGINT NOT NULL,
+  `status` VARCHAR(32) NOT NULL,
+  `idempotency_key` VARCHAR(128) NOT NULL,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  `deleted_at` DATETIME(3) NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_orders_order_no` (`order_no`),
+  UNIQUE KEY `uk_orders_idempotency_key` (`idempotency_key`),
+  KEY `idx_orders_user_id` (`user_id`),
+  KEY `idx_orders_product_id` (`product_id`),
+  KEY `idx_orders_status` (`status`),
+  KEY `idx_orders_deleted_at` (`deleted_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
