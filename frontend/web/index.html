@@ -1,0 +1,65 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>EShop Web Demo</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <h1>EShop 前端联调页面</h1>
+      <div class="actions">
+        <button id="btn-load-products">商品列表</button>
+        <button id="btn-load-orders">我的订单</button>
+        <button id="btn-cart">购物车</button>
+      </div>
+    </header>
+
+    <main class="grid">
+      <section class="card">
+        <h2>用户注册</h2>
+        <form id="register-form">
+          <input name="username" placeholder="用户名" required minlength="3" />
+          <input name="password" placeholder="密码(>=6)" required type="password" minlength="6" />
+          <input name="nickname" placeholder="昵称(可选)" />
+          <button type="submit">注册</button>
+        </form>
+      </section>
+
+      <section class="card">
+        <h2>用户登录</h2>
+        <form id="login-form">
+          <input name="username" placeholder="用户名" required />
+          <input name="password" placeholder="密码" required type="password" />
+          <button type="submit">登录</button>
+        </form>
+        <p id="auth-status">未登录</p>
+      </section>
+
+      <section class="card wide">
+        <h2>商品列表</h2>
+        <div id="product-list" class="list"></div>
+      </section>
+
+      <section class="card wide" id="product-detail-card" hidden>
+        <h2>商品详情</h2>
+        <div id="product-detail"></div>
+      </section>
+
+      <section class="card wide">
+        <h2>购物车</h2>
+        <div id="cart-list"></div>
+        <button id="btn-checkout">下单结算</button>
+      </section>
+
+      <section class="card wide">
+        <h2>我的订单</h2>
+        <div id="order-list"></div>
+      </section>
+    </main>
+
+    <aside id="toast"></aside>
+    <script src="./app.js"></script>
+  </body>
+</html>
